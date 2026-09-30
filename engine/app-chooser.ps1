@@ -181,19 +181,38 @@ function Save-Config {
 }
 function Get-Physical {
     param([string]$Alias = '')
+    # The choice matters twice: outbound sockets are pinned to this adapter, and its address
+    # is what marks a connection as being on the real network. A virtual adapter (ZeroTier
+    # One, Tailscale, Hyper-V, VMware, ...) usually carries a default route of its own
+    # without providing internet access, so real hardware is preferred and the name filter is
+    # only a fallback for adapters whose kind cannot be read.
     $ExcludeAlias = 'VPN|Loopback|Host-Only|Virtual|TAP|Kernel Debug|Wi-Fi Direct|WAN Miniport|6to4|Teredo|IP-HTTPS'
-    $cfgs = Get-NetIPConfiguration -ErrorAction SilentlyContinue | Where-Object {
-        $_.IPv4DefaultGateway -ne $null -and $_.NetAdapter.Status -eq 'Up' -and $_.InterfaceAlias -notmatch $ExcludeAlias
+    $list = @()
+    foreach ($cfg in @(Get-NetIPConfiguration -ErrorAction SilentlyContinue)) {
+        if ($null -eq $cfg.IPv4Address) { continue }
+        if ($cfg.NetAdapter.Status -ne 'Up') { continue }
+        if (-not $Alias -and $cfg.InterfaceAlias -match $ExcludeAlias) { continue }
+        if ($Alias -and $cfg.InterfaceAlias -ne $Alias) { continue }
+        $def = @(Get-NetRoute -InterfaceIndex $cfg.InterfaceIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)
+        if ($null -eq $cfg.IPv4DefaultGateway -and $def.Count -eq 0) { continue }
+        $gw = '0.0.0.0'
+        if ($null -ne $cfg.IPv4DefaultGateway) { $gw = $cfg.IPv4DefaultGateway[0].NextHop }
+        $na = $cfg.NetAdapter
+        $hw = $true
+        if ($na.PSObject.Properties['HardwareInterface']) { $hw = ($na.HardwareInterface -eq $true) }
+        elseif ($na.PSObject.Properties['Virtual'])       { $hw = ($na.Virtual -ne $true) }
+        $metric = [int]::MaxValue
+        if ($def.Count -gt 0) { $metric = [int](@($def | Sort-Object RouteMetric)[0].RouteMetric) }
+        $list += [pscustomobject]@{
+            Alias    = $cfg.InterfaceAlias
+            IfIndex  = [int]$cfg.InterfaceIndex
+            Ip       = $cfg.IPv4Address[0].IPAddress
+            Gateway  = $gw
+            Metric   = $metric
+            Hardware = $hw
+        }
     }
-    if ($Alias) { $cfgs = @($cfgs | Where-Object { $_.InterfaceAlias -eq $Alias }) }
-    $cfg = $cfgs | Select-Object -First 1
-    if (-not $cfg) { return $null }
-    [pscustomobject]@{
-        Alias   = $cfg.InterfaceAlias
-        IfIndex = [int]$cfg.InterfaceIndex
-        Ip      = $cfg.IPv4Address[0].IPAddress
-        Gateway = $cfg.IPv4DefaultGateway[0].NextHop
-    }
+    return @($list | Sort-Object @{ Expression = { -not $_.Hardware } }, Metric, IfIndex) | Select-Object -First 1
 }
 
 function Get-Tunnel {

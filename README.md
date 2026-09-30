@@ -50,6 +50,11 @@ leaves on the real network; everything else is unaffected. Chromium-based browse
 (Chrome, Edge, Brave) are started with `--proxy-server` pointing at it. Other apps
 can use it if they have a proxy setting: HTTP proxy `127.0.0.1`, port `49500`.
 
+The adapter the proxy leaves on is chosen automatically: a real network card is preferred
+and the choice is confirmed with a test connection before the proxy starts, so a virtual
+adapter (ZeroTier, Hyper-V, VMware, ...) is not used as the way out. To set it by hand:
+`app-bypass.ps1 -Underlay "<adapter name>"` (`Get-NetAdapter` lists the names).
+
 **Per-destination: routes.** A full-tunnel VPN covers the internet with a few broad
 routes. A more specific route through the physical adapter wins by longest-prefix
 match, so traffic to that destination bypasses the tunnel for every app. The

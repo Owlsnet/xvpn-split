@@ -84,27 +84,46 @@ static DWORD BestInterface(const char* ip) {
     return row.InterfaceIndex;
 }
 
+// The NDIS "hardware interface" flag: a real network card sets it, most virtual adapters
+// (ZeroTier, Hyper-V, VMware, ...) do not. IP_ADAPTER_ADDRESSES carries no such field, so
+// the interface row is asked instead. An interface that cannot be queried counts as real.
+static bool IsHardwareInterface(DWORD idx) {
+    MIB_IF_ROW2 row{};
+    row.InterfaceIndex = idx;
+    if (GetIfEntry2(&row) != NO_ERROR) return true;
+    return row.InterfaceAndOperStatusFlags.HardwareInterface != 0;
+}
+
+// The adapter that carries traffic straight to the internet. Real network cards are
+// preferred: virtual adapters frequently install a default route of their own while
+// providing no internet access, which would mislabel every application. Falls back to
+// accepting a virtual adapter.
+static bool PickNic(NetState& s, bool onlyHardware) {
+    std::vector<BYTE> buf;
+    if (!GetAdapters(buf)) return false;
+    for (auto* a = (IP_ADAPTER_ADDRESSES*)buf.data(); a; a = a->Next) {
+        if (a->OperStatus != IfOperStatusUp) continue;
+        if (a->IfType == IF_TYPE_SOFTWARE_LOOPBACK || a->IfType == IF_TYPE_TUNNEL) continue;
+        if (onlyHardware && !IsHardwareInterface(a->IfIndex)) continue;
+        if (!HasDefaultRoute(a->IfIndex)) continue;
+        std::string alias = Narrow(a->FriendlyName);
+        if (alias.find("Host-Only") != std::string::npos || alias.find("Virtual") != std::string::npos) continue;
+        s.nicIf = (int)a->IfIndex;
+        s.nicAlias = alias;
+        for (auto* u = a->FirstUnicastAddress; u && s.nicIp.empty(); u = u->Next)
+            if (u->Address.lpSockaddr->sa_family == AF_INET)
+                s.nicIp = Ip4ToString(&((sockaddr_in*)u->Address.lpSockaddr)->sin_addr);
+        for (auto* g = a->FirstGatewayAddress; g && s.nicGw.empty(); g = g->Next)
+            if (g->Address.lpSockaddr->sa_family == AF_INET)
+                s.nicGw = Ip4ToString(&((sockaddr_in*)g->Address.lpSockaddr)->sin_addr);
+        return true;
+    }
+    return false;
+}
+
 void RefreshNetState() {
     NetState s;
-    std::vector<BYTE> buf;
-    if (GetAdapters(buf)) {
-        for (auto* a = (IP_ADAPTER_ADDRESSES*)buf.data(); a; a = a->Next) {
-            if (a->OperStatus != IfOperStatusUp) continue;
-            if (a->IfType == IF_TYPE_SOFTWARE_LOOPBACK || a->IfType == IF_TYPE_TUNNEL) continue;
-            if (!HasDefaultRoute(a->IfIndex)) continue;
-            std::string alias = Narrow(a->FriendlyName);
-            if (alias.find("Host-Only") != std::string::npos || alias.find("Virtual") != std::string::npos) continue;
-            s.nicIf = (int)a->IfIndex;
-            s.nicAlias = alias;
-            for (auto* u = a->FirstUnicastAddress; u && s.nicIp.empty(); u = u->Next)
-                if (u->Address.lpSockaddr->sa_family == AF_INET)
-                    s.nicIp = Ip4ToString(&((sockaddr_in*)u->Address.lpSockaddr)->sin_addr);
-            for (auto* g = a->FirstGatewayAddress; g && s.nicGw.empty(); g = g->Next)
-                if (g->Address.lpSockaddr->sa_family == AF_INET)
-                    s.nicGw = Ip4ToString(&((sockaddr_in*)g->Address.lpSockaddr)->sin_addr);
-            break;
-        }
-    }
+    if (!PickNic(s, true)) PickNic(s, false);
     // Several public addresses are tried because any single one may be a destination
     // exception that deliberately goes out the physical adapter.
     DWORD tunnel = 0;

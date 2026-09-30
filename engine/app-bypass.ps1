@@ -119,23 +119,123 @@ function Line {
     else                       { Write-Host ('          ' + $Text) -ForegroundColor Gray }
 }
 
-function Get-Physical {
+# -------------------------------------------------------- picking the uplink ---
+# Outbound sockets are pinned to a single interface, so that interface has to be the one
+# that can reach the internet on its own. Several kinds of virtual adapter (ZeroTier One,
+# Tailscale, Hyper-V, VMware, ...) install a default route of their own while carrying no
+# internet access at all, and their names give no hint of that. Picking one produces a proxy
+# that accepts connections and then times out on every one of them, so adapters are ranked
+# by HardwareInterface and the winner is confirmed with a real connection first.
+$probeCs = @'
+using System;
+using System.Net;
+using System.Net.Sockets;
+using System.Runtime.InteropServices;
+
+public class UnderlayProbe
+{
+    [DllImport("Ws2_32.dll", SetLastError = true)]
+    private static extern int setsockopt(IntPtr s, int level, int optname, ref int optval, int optlen);
+
+    // What the proxy itself does: pin one socket to one interface, then handshake.
+    // The source address it leaves on comes back in `local`, so a pin the driver ignored
+    // can be told apart from one that worked.
+    public static bool Try(int ifIndex, string ip, int port, int timeoutMs, out string local)
+    {
+        local = "";
+        Socket s = null;
+        try
+        {
+            s = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
+            int v = IPAddress.HostToNetworkOrder(ifIndex);
+            // If the pin does not take, the socket quietly falls back to the default route
+            // (usually the VPN) and the test would prove nothing.
+            if (setsockopt(s.Handle, 0, 31, ref v, 4) != 0) return false;   // IPPROTO_IP, IP_UNICAST_IF
+            IAsyncResult ar = s.BeginConnect(IPAddress.Parse(ip), port, null, null);
+            if (!ar.AsyncWaitHandle.WaitOne(timeoutMs)) return false;
+            s.EndConnect(ar);
+            if (!s.Connected) return false;
+            IPEndPoint ep = s.LocalEndPoint as IPEndPoint;
+            if (ep != null) local = ep.Address.ToString();
+            return true;
+        }
+        catch (Exception) { return false; }
+        finally { if (s != null) { try { s.Close(); } catch (Exception) { } } }
+    }
+}
+'@
+if (-not ('UnderlayProbe' -as [type])) { Add-Type -TypeDefinition $probeCs -Language CSharp }
+
+function Get-Candidates {
     param([string]$Alias = '')
     $ExcludeAlias = 'VPN|Loopback|Host-Only|Virtual|TAP|Kernel Debug|Wi-Fi Direct|WAN Miniport|6to4|Teredo|IP-HTTPS'
-    $cfgs = Get-NetIPConfiguration -ErrorAction SilentlyContinue | Where-Object {
-        $_.IPv4DefaultGateway -ne $null -and $_.NetAdapter.Status -eq 'Up' -and $_.InterfaceAlias -notmatch $ExcludeAlias
+    $list = @()
+    foreach ($cfg in @(Get-NetIPConfiguration -ErrorAction SilentlyContinue)) {
+        if ($null -eq $cfg.IPv4Address) { continue }
+        if ($cfg.NetAdapter.Status -ne 'Up') { continue }
+        if (-not $Alias -and $cfg.InterfaceAlias -match $ExcludeAlias) { continue }
+        if ($Alias -and $cfg.InterfaceAlias -ne $Alias) { continue }
+        $def = @(Get-NetRoute -InterfaceIndex $cfg.InterfaceIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue)
+        if ($null -eq $cfg.IPv4DefaultGateway -and $def.Count -eq 0) { continue }
+        $gw = '0.0.0.0'
+        if ($null -ne $cfg.IPv4DefaultGateway) { $gw = $cfg.IPv4DefaultGateway[0].NextHop }
+        $na = $cfg.NetAdapter
+        $hw = $true
+        if ($na.PSObject.Properties['HardwareInterface']) { $hw = ($na.HardwareInterface -eq $true) }
+        elseif ($na.PSObject.Properties['Virtual'])       { $hw = ($na.Virtual -ne $true) }
+        $metric = [int]::MaxValue
+        if ($def.Count -gt 0) { $metric = [int](@($def | Sort-Object RouteMetric)[0].RouteMetric) }
+        $list += [pscustomobject]@{
+            Alias           = $cfg.InterfaceAlias
+            IfIndex         = [int]$cfg.InterfaceIndex
+            Ip              = $cfg.IPv4Address[0].IPAddress
+            Gateway         = $gw
+            HasDefaultRoute = ($def.Count -gt 0)
+            Metric          = $metric
+            Hardware        = $hw
+        }
     }
-    if ($Alias) { $cfgs = @($cfgs | Where-Object { $_.InterfaceAlias -eq $Alias }) }
-    $cfg = $cfgs | Select-Object -First 1
-    if (-not $cfg) { return $null }
-    $def = @(Get-NetRoute -InterfaceIndex $cfg.InterfaceIndex -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction SilentlyContinue).Count
-    [pscustomobject]@{
-        Alias   = $cfg.InterfaceAlias
-        IfIndex = [int]$cfg.InterfaceIndex
-        Ip      = $cfg.IPv4Address[0].IPAddress
-        Gateway = $cfg.IPv4DefaultGateway[0].NextHop
-        HasDefaultRoute = ($def -gt 0)
+    # real hardware first, cheapest default route first among those; a virtual adapter is
+    # only ever used if no real one can carry the traffic
+    return @($list | Sort-Object @{ Expression = { -not $_.Hardware } }, Metric, IfIndex)
+}
+
+function Test-UnderlayPath {
+    # A pinned socket is what carries every request the proxy makes, so this is the only
+    # check that says anything useful about the adapter. One public address answering is
+    # enough. The address the test socket left on is returned as well.
+    param([int]$IfIndex)
+    foreach ($t in @(@('1.1.1.1', 443), @('8.8.8.8', 53), @('9.9.9.9', 443))) {
+        $local = ''
+        if ([UnderlayProbe]::Try($IfIndex, $t[0], [int]$t[1], 2000, [ref]$local)) {
+            return [pscustomobject]@{ Ok = $true; Local = $local }
+        }
     }
+    return [pscustomobject]@{ Ok = $false; Local = '' }
+}
+
+function Get-Physical {
+    param([string]$Alias = '')
+    $cands = @(Get-Candidates -Alias $Alias)
+    if ($cands.Count -eq 0) { return $null }
+    $tried = @()
+    foreach ($c in $cands) {
+        $r = Test-UnderlayPath -IfIndex $c.IfIndex
+        if ($r.Ok) {
+            $c | Add-Member -NotePropertyName Verified -NotePropertyValue $true
+            $c | Add-Member -NotePropertyName VerifiedFrom -NotePropertyValue $r.Local
+            $c | Add-Member -NotePropertyName Tried -NotePropertyValue $tried
+            return $c
+        }
+        $tried += ($c.Alias + ' (if ' + $c.IfIndex + ')')
+    }
+    # Nothing answered. Hand back the best-ranked candidate so the report can name what was
+    # tried, and say plainly that it is unverified rather than passing it off as ready.
+    $best = $cands[0]
+    $best | Add-Member -NotePropertyName Verified -NotePropertyValue $false
+    $best | Add-Member -NotePropertyName VerifiedFrom -NotePropertyValue ''
+    $best | Add-Member -NotePropertyName Tried -NotePropertyValue $tried
+    return $best
 }
 
 function Get-Tunnel {
@@ -498,9 +598,23 @@ Write-Host '==================================================================' 
 Line Info ('machine  : ' + $env:COMPUTERNAME + '   user ' + $env:USERNAME)
 
 $phys = Get-Physical -Alias $Underlay
-if (-not $phys) { Line FAIL 'no physical adapter with a default gateway found - pass -Underlay "<alias>"'; exit 1 }
+if (-not $phys) { Line FAIL 'no adapter with a default gateway found - pass -Underlay "<alias>"'; exit 1 }
 $tunnel = Get-Tunnel -UnderlayIfIndex $phys.IfIndex
-Line OK ('physical : ' + $phys.Alias + '  ' + $phys.Ip + '  gateway ' + $phys.Gateway + '  if ' + $phys.IfIndex)
+$virt = ''
+if (-not $phys.Hardware) { $virt = '  (virtual adapter)' }
+Line OK ('physical : ' + $phys.Alias + $virt + '  ' + $phys.Ip + '  gateway ' + $phys.Gateway + '  if ' + $phys.IfIndex)
+if ($phys.Verified) {
+    Line OK ('path     : a pinned socket reached a public address from ' + $phys.VerifiedFrom + ' - OUT traffic leaves on this adapter')
+    if ($phys.VerifiedFrom -and $phys.VerifiedFrom -ne $phys.Ip) {
+        Line WARN ('the test socket left on ' + $phys.VerifiedFrom + ' instead of ' + $phys.Ip + ' - the pin is being ignored')
+        Line Info 'apps sent OUT would still follow the normal route (into the VPN) until that adapter works'
+    }
+} else {
+    Line WARN ('path     : nothing answered through ' + $phys.Alias + ' (if ' + $phys.IfIndex + ') - OUT traffic will time out')
+    if ($phys.Tried.Count -gt 0) { Line WARN ('tried first: ' + ($phys.Tried -join ', ') + '  (they did not answer either)') }
+    Line Info 'possible causes: a kill switch in the VPN client, or a network that only allows the VPN itself out'
+    Line Info 'to choose the adapter by hand:  .\app-bypass.ps1 -Underlay "<alias>"   (list them: Get-NetAdapter)'
+}
 if ($tunnel) { Line OK ('tunnel   : ' + $tunnel.Alias + '  ' + $tunnel.Ip + '  if ' + $tunnel.IfIndex + '  (' + $tunnel.Covered + ' covering routes - anything not launched from here keeps using it)') }
 else         { Line WARN 'no VPN tunnel detected - the proxy still works, but there is nothing to bypass' }
 if (-not $phys.HasDefaultRoute) {
