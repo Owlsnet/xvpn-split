@@ -120,7 +120,10 @@ Add `-DryRun` to preview a change without making it.
 - IPv4 only.
 - If the VPN blocks traffic outside the tunnel (a kill switch), neither technique
   can work while that is on. The proxy test and `split-tunnel.ps1 -Probe` detect this.
-- After a restart of Windows, the proxy is not running. Send the app OUT again.
+- After a restart of Windows, the proxy is not running. Send the app OUT again. While the
+  proxy is down, a browser that was sent OUT cannot load anything and reports
+  `ERR_TUNNEL_CONNECTION_FAILED` for every address; the Apps tab shows a warning and a
+  Start proxy button in that case.
 - Where Group Policy forces a PowerShell execution policy, the embedded scripts may
   be blocked.
 

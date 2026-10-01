@@ -557,10 +557,15 @@ static void DrawDashboard() {
         cards.push_back({ IC_GLOBE, V_CYAN, "EGRESS",
                           e.ip.empty() ? (e.busy ? std::string("measuring") + ELL : std::string("unknown")) : e.ip, Col(V_CYAN), d });
     }
-    cards.push_back({ IC_NETWORK, k.proxyUp ? V_OK : V_DIM, "BYPASS PROXY",
-                      k.proxyUp ? ("port " + std::to_string(k.proxyPort)) : std::string("not running"), k.proxyUp ? K_TEXT : K_SUB,
+    int outApps = 0;
+    for (const auto& a : s_apps)
+        if (a.mode == "OUT") outApps++;
+    cards.push_back({ IC_NETWORK, k.proxyUp ? V_OK : (outApps > 0 ? V_OUT : V_DIM), "BYPASS PROXY",
+                      k.proxyUp ? ("port " + std::to_string(k.proxyPort)) : std::string("not running"),
+                      k.proxyUp ? K_TEXT : (outApps > 0 ? Col(V_OUT) : K_SUB),
                       k.proxyUp ? ("pid " + std::to_string(k.proxyPid) + DOT + "OUT apps use it")
-                                : std::string("starts when an app is sent OUT") });
+                                : (outApps > 0 ? (std::to_string(outApps) + " app(s) set OUT cannot load anything without it")
+                                               : std::string("starts when an app is sent OUT")) });
     cards.push_back({ IC_FILTER, k.exceptions ? V_OUT : V_ACCENT, "EXCEPTIONS",
                       std::to_string(k.exceptions) + " installed", K_TEXT,
                       k.exceptions ? std::string("destination routes are active") : std::string("no destination routes") });
@@ -616,6 +621,30 @@ static void DrawApps() {
     ImGui::PopFont();
     ImGui::SameLine(0, S(6));
     if (IconButton("##rescan", IC_REFRESH, ImVec2(fh, fh), "rescan now", true)) s_appsDirty = true;
+
+    // An OUT app is launched with --proxy-server pointing at the bypass proxy. While the
+    // proxy is not running that browser cannot load anything at all and reports
+    // ERR_TUNNEL_CONNECTION_FAILED for every address, so say it here and offer to start it.
+    int outApps = 0;
+    std::string outFirst;
+    for (const auto& a : s_apps)
+        if (a.mode == "OUT") { outApps++; if (outFirst.empty()) outFirst = a.name; }
+    if (outApps > 0 && !s_kit.proxyUp) {
+        float h = S(30), bw = ActionButtonWidth(IC_PLAY, "Start proxy");
+        ImVec2 p = ImGui::GetCursorScreenPos();
+        dl->AddRectFilled(p, p + ImVec2(avail, h), Alpha(V_OUT, 0.12f), S(8));
+        dl->AddRect(p, p + ImVec2(avail, h), Alpha(V_OUT, 0.38f), S(8));
+        std::string msg = std::to_string(outApps) + (outApps == 1 ? " app is" : " apps are") +
+                          " set OUT but the proxy is not running";
+        if (!outFirst.empty()) msg += " (" + outFirst + (outApps > 1 ? ", ..." : "") + ")";
+        msg = Elide(s_fSemi, 11.5f, msg, avail - bw - S(24));
+        TDraw(dl, s_fSemi, 11.5f, ImVec2(p.x + S(10), p.y + (h - TSize(s_fSemi, 11.5f, msg.c_str()).y) * 0.5f), Col(V_OUT), msg.c_str());
+        ImGui::SetCursorScreenPos(ImVec2(p.x + avail - bw - S(6), p.y + S(1)));
+        if (ActionButton("##outstart", IC_PLAY, "Start proxy", !EngineBusy(), BTN_PRIMARY))
+            RunEngine("app-chooser.ps1", "-StartProxy", "starting the bypass proxy");
+        ImGui::SetCursorScreenPos(p);
+        ImGui::Dummy(ImVec2(avail, h + S(6)));
+    }
 
     ImVec2 hp = ImGui::GetCursorScreenPos();
     const float liveW = S(96), modeW = S(58);
