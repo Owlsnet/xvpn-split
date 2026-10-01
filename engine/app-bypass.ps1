@@ -273,6 +273,7 @@ function Get-Tunnel {
 }
 $cs = @'
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Runtime.InteropServices;
@@ -285,6 +286,7 @@ public class AppBypass
     private static extern int setsockopt(IntPtr s, int level, int optname, ref int optval, int optlen);
 
     public static int  IfIndex  = 0;     // interface index outbound sockets are pinned to
+    public static string[] DnsServers = new string[0];   // that interface's own resolvers
     public static bool Verbose  = true;  // log one line per request
     public static string LogPath = "";   // optional file that request lines are appended to
     public static long Requests = 0;
@@ -341,12 +343,102 @@ public class AppBypass
         finally { try { client.Close(); } catch (Exception) { } }
     }
 
+    // Resolve a hostname the way the real network would: ask that adapter's own DNS servers
+    // over a socket pinned to it. With a VPN up, the system resolver answers from the
+    // tunnel's DNS, which does not know names that exist only on the real network (a school
+    // or company internal address). A proxy that cannot resolve the name cannot open the
+    // tunnel either, and the browser then reports ERR_TUNNEL_CONNECTION_FAILED for every
+    // address, even though the same address loads fine with the VPN switched off.
+    private static IPAddress[] ResolvePinned(string host)
+    {
+        List<IPAddress> found = new List<IPAddress>();
+        for (int i = 0; i < DnsServers.Length; i++)
+        {
+            if (AskDns(DnsServers[i], host, found) && found.Count > 0) { return found.ToArray(); }
+            found.Clear();
+        }
+        try { return Dns.GetHostAddresses(host); }
+        catch (Exception)
+        {
+            throw new Exception("cannot resolve " + host + (DnsServers.Length > 0
+                ? " through the real network's DNS (" + string.Join(", ", DnsServers) + ") or the system resolver"
+                : " - the adapter has no DNS servers and the system resolver does not know it"));
+        }
+    }
+
+    // one A-record query over UDP, sent from a socket pinned to the adapter
+    private static bool AskDns(string server, string host, List<IPAddress> answers)
+    {
+        Socket s = new Socket(AddressFamily.InterNetwork, SocketType.Dgram, ProtocolType.Udp);
+        try
+        {
+            int v = IPAddress.HostToNetworkOrder(IfIndex);
+            setsockopt(s.Handle, 0, 31, ref v, 4);   // IPPROTO_IP, IP_UNICAST_IF
+            s.Connect(new IPEndPoint(IPAddress.Parse(server), 53));
+            s.ReceiveTimeout = 3000;
+            s.Send(QueryBytes(host));
+            byte[] buf = new byte[1500];
+            int got = s.Receive(buf);
+            if (got < 12) { return false; }
+            if ((buf[3] & 0x0F) != 0) { return true; }   // the server answered: that code means no such name
+            int qd = (buf[4] << 8) | buf[5], an = (buf[6] << 8) | buf[7];
+            int p = 12;
+            for (int i = 0; i < qd; i++) { p = SkipName(buf, p) + 4; }
+            for (int i = 0; i < an && p < got; i++)
+            {
+                p = SkipName(buf, p);
+                if (p + 10 > got) { break; }
+                int type  = (buf[p] << 8) | buf[p + 1];
+                int rdlen = (buf[p + 8] << 8) | buf[p + 9];
+                int rd = p + 10;
+                if (type == 1 && rdlen == 4)
+                {
+                    answers.Add(new IPAddress(new byte[] { buf[rd], buf[rd + 1], buf[rd + 2], buf[rd + 3] }));
+                }
+                p = rd + rdlen;
+            }
+            return true;
+        }
+        catch (Exception) { return false; }
+        finally { try { s.Close(); } catch (Exception) { } }
+    }
+
+    private static byte[] QueryBytes(string host)
+    {
+        List<byte> q = new List<byte>();
+        Add16(q, 0x1234); Add16(q, 0x0100); Add16(q, 1); Add16(q, 0); Add16(q, 0); Add16(q, 0);
+        string[] labels = host.Split('.');
+        for (int i = 0; i < labels.Length; i++)
+        {
+            byte[] b = Encoding.ASCII.GetBytes(labels[i]);
+            q.Add((byte)b.Length);
+            q.AddRange(b);
+        }
+        q.Add(0);
+        Add16(q, 1); Add16(q, 1);        // QTYPE A, QCLASS IN
+        return q.ToArray();
+    }
+
+    private static void Add16(List<byte> q, int v) { q.Add((byte)(v >> 8)); q.Add((byte)(v & 0xFF)); }
+
+    private static int SkipName(byte[] d, int p)
+    {
+        while (p < d.Length)
+        {
+            int len = d[p];
+            if (len == 0) { return p + 1; }
+            if ((len & 0xC0) == 0xC0) { return p + 2; }   // compression pointer
+            p += 1 + len;
+        }
+        return p;
+    }
+
     private static Socket Pinned(string host, int port)
     {
         IPAddress[] ips;
         IPAddress parsed;
         if (IPAddress.TryParse(host, out parsed)) { ips = new IPAddress[] { parsed }; }
-        else { ips = Dns.GetHostAddresses(host); }
+        else { ips = ResolvePinned(host); }
         Exception last = null;
         for (int i = 0; i < ips.Length; i++)
         {
@@ -620,9 +712,23 @@ else         { Line WARN 'no VPN tunnel detected - the proxy still works, but th
 if (-not $phys.HasDefaultRoute) {
     Line WARN ('adapter ' + $phys.Alias + ' has no 0.0.0.0/0 route of its own - pinning sockets to it would fail')
 }
+# Names must be resolved the way this adapter would resolve them. With a VPN up the system
+# resolver answers from the tunnel's DNS, which does not know addresses that exist only on
+# the real network (a school or company internal name), so a host that loads with the VPN off
+# fails through the proxy with ERR_TUNNEL_CONNECTION_FAILED.
+$dns = @(Get-DnsClientServerAddress -InterfaceIndex $phys.IfIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+         Where-Object { $_.ServerAddresses } | Select-Object -ExpandProperty ServerAddresses |
+         Where-Object { $_ -match '^\d{1,3}(\.\d{1,3}){3}$' } | Select-Object -Unique)
+if ($dns.Count -gt 0) {
+    Line OK ('dns      : ' + ($dns -join ', ') + '   asked over the pinned adapter, so internal names still resolve')
+} else {
+    Line WARN ('dns      : ' + $phys.Alias + ' has no DNS servers - names fall back to the system resolver')
+    Line Info 'with a VPN up that resolver may not know names that exist only on the real network'
+}
 
 Add-Type -TypeDefinition $cs -Language CSharp
 [AppBypass]::IfIndex = $phys.IfIndex
+[AppBypass]::DnsServers = [string[]]$dns
 [AppBypass]::Verbose = (-not $NoLog)
 # Start-Transcript does not capture console output written by the compiled proxy,
 # so when the script runs detached, request lines need a file of their own.

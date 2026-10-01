@@ -45,7 +45,9 @@ Windows has no per-process routing for normal programs, so xvpn uses two techniq
 
 **Per-app: bypass proxy.** xvpn runs a small HTTP/HTTPS proxy on `127.0.0.1`. Its
 outgoing connections are bound to the physical network adapter with the socket
-option `IP_UNICAST_IF`, so they skip the VPN's routes. An app that uses the proxy
+option `IP_UNICAST_IF`, so they skip the VPN's routes. Names are resolved by asking that
+adapter's own DNS servers, also over a pinned socket, so addresses that exist only on your
+real network still resolve while the VPN is up. An app that uses the proxy
 leaves on the real network; everything else is unaffected. Chromium-based browsers
 (Chrome, Edge, Brave) are started with `--proxy-server` pointing at it. Other apps
 can use it if they have a proxy setting: HTTP proxy `127.0.0.1`, port `49500`.
@@ -126,6 +128,10 @@ Add `-DryRun` to preview a change without making it.
   Start proxy button in that case.
 - Where Group Policy forces a PowerShell execution policy, the embedded scripts may
   be blocked.
+- A destination exception given as a hostname is resolved with the system resolver. With
+  the VPN up that resolver answers from the tunnel's DNS, so a name that exists only on your
+  own network has to be given as an address instead. The bypass proxy has no such limit: it
+  asks the real adapter's own DNS servers.
 
 ## Files and removal
 
