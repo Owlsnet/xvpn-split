@@ -38,7 +38,7 @@ cl /nologo /utf-8 /std:c++17 /O2 /MT /EHsc /W3 /DNDEBUG /DUNICODE /D_UNICODE ^
    /Fe:"%OUT%\xvpn-ui.exe" /Fo:"%OUT%\\" ^
    /link /SUBSYSTEM:WINDOWS ^
    d3d11.lib dxgi.lib d3dcompiler.lib dwmapi.lib user32.lib gdi32.lib shell32.lib ole32.lib ^
-   iphlpapi.lib ws2_32.lib winhttp.lib
+   iphlpapi.lib ws2_32.lib winhttp.lib crypt32.lib
 if errorlevel 1 goto failed
 echo.
 echo built %OUT%\xvpn-ui.exe

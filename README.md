@@ -19,6 +19,9 @@ it needs no administrator rights for per-app splitting.
 - **Destination exceptions.** Send traffic for chosen IP addresses, networks or
   hostnames past the VPN for every app, using temporary routes that a reboot or Undo
   removes. This needs administrator rights.
+- **VPN on your phone.** Turns on the Windows Mobile Hotspot with a proxy that only
+  uses the VPN, so phones and other devices on it can browse through the VPN too.
+  This needs administrator rights.
 - **Status at a glance.** VPN tunnel, physical adapter, gateway and the public IP
   address your traffic currently leaves from.
 
@@ -71,6 +74,7 @@ unpacked to `%LOCALAPPDATA%\xvpn` on start:
 | `app-chooser.ps1` | IN/OUT choices, switching browsers, starting and stopping the proxy |
 | `app-bypass.ps1` | The loopback bypass proxy |
 | `split-tunnel.ps1` | Destination exceptions (routes) |
+| `hotspot.ps1` | The Mobile Hotspot and its VPN proxy |
 
 They can also be run on their own; each has built-in help, for example
 `Get-Help "$env:LOCALAPPDATA\xvpn\app-chooser.ps1" -Full`.
@@ -81,8 +85,8 @@ They can also be run on their own; each has built-in help, for example
 
 The list shows every app with open connections, plus the installed browsers.
 
-- **MODE** is what you chose: IN (VPN) or OUT (real network).
-- **LIVE** is what the app's connections are doing right now: `IN`, `OUT proxy`,
+- **SET TO** is what you chose: IN (VPN) or OUT (real network).
+- **RIGHT NOW** is what the app's connections are doing right now: `IN`, `OUT proxy`,
   `OUT real`, `MIXED` (both) or `idle`.
 
 Sending a browser OUT or IN restarts it, because a browser only reads its proxy
@@ -101,9 +105,11 @@ Test compares your public IP address with and without the proxy.
 
 ### Exceptions
 
-Shows how many destination exceptions are installed. Installing and removing them
-needs administrator rights, so the tab gives ready-to-copy commands to run in an
-elevated PowerShell window (Terminal (Admin)):
+Lists the websites and addresses that skip the VPN. Type one or more, separated by
+commas, and click **Add**; **Remove all** takes them all out again. Both need
+administrator rights, so Windows asks for permission first.
+
+The same from an elevated PowerShell window (Terminal (Admin)):
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\xvpn\split-tunnel.ps1" -Exclude 1.1.1.1,example.com -Apply
@@ -111,6 +117,32 @@ powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\xvpn\split-tunnel.ps
 ```
 
 Add `-DryRun` to preview a change without making it.
+
+### Hotspot
+
+Lets phones and other devices use the VPN through your PC's Windows Mobile Hotspot.
+
+1. Optionally type a hotspot name and password (they are remembered for next time).
+2. Click **Start** and allow the Windows permission prompt.
+3. On the phone, join the hotspot. In that Wi-Fi network's settings, set **Proxy** to
+   **Manual** with the server and port the tab shows (normally `192.168.137.1`, `8080`).
+
+The tab shows how many devices are connected. **Stop** ends the proxy, removes its
+firewall rule and turns the hotspot off again if xvpn turned it on.
+
+Sharing the VPN itself over the hotspot is not possible with X-VPN: it is a VPN-plugin
+app without a network adapter, and Windows' Internet Connection Sharing refuses it or
+crashes. So xvpn runs a proxy on the hotspot instead. Every connection it makes is pinned
+to the VPN tunnel, it follows the tunnel when the VPN reconnects, and while the VPN is
+down it refuses connections rather than using your real network. A firewall rule lets
+devices on the hotspot reach the proxy port, and nothing else.
+
+From an elevated PowerShell window the same works without the UI:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\xvpn\hotspot.ps1" -Start -Ssid "<name>" -Passphrase "<password>"
+powershell -ExecutionPolicy Bypass -File "$env:LOCALAPPDATA\xvpn\hotspot.ps1" -Stop
+```
 
 ## Limitations
 
@@ -128,6 +160,10 @@ Add `-DryRun` to preview a change without making it.
   Start proxy button in that case.
 - Where Group Policy forces a PowerShell execution policy, the embedded scripts may
   be blocked.
+- On the hotspot, only traffic that uses the proxy (browsing and most apps, over TCP)
+  goes through the VPN. Games, calls and other apps that ignore the Wi-Fi proxy are not
+  guaranteed to use the VPN. After a restart of Windows, click Start on the Hotspot tab
+  again.
 - A destination exception given as a hostname is resolved with the system resolver. With
   the VPN up that resolver answers from the tunnel's DNS, so a name that exists only on your
   own network has to be given as an address instead. The bypass proxy has no such limit: it
@@ -135,17 +171,23 @@ Add `-DryRun` to preview a change without making it.
 
 ## Files and removal
 
-xvpn writes only to `%LOCALAPPDATA%\xvpn`:
+xvpn writes only to `%LOCALAPPDATA%\xvpn`, plus one firewall rule ("xvpn hotspot proxy")
+while the hotspot proxy is on:
 
 | File | Content |
 |---|---|
 | `*.ps1` | The unpacked engine scripts |
 | `apps.config.json` | Your IN/OUT choices |
+| `activity.log` | Everything the Activity log showed, with dates |
 | `_bypass.pid`, `_bypass*.log` | Proxy process id and logs |
 | `split-tunnel.state.json`, `routes-before.json` | Installed exceptions and a route snapshot |
+| `hotspot.state.json`, `hotspot.status.json` | What Start changed, and the live hotspot status |
+| `hotspot.serve.pid`, `_hotspot-serve.log` | The hotspot proxy's process id and log |
+| `hotspot.settings.bin` | Hotspot name and password, encrypted for your Windows account |
 | `chrome-out\` (and similar) | Separate browser profile, only if one was needed |
 
-To remove xvpn, send your apps IN, run Undo if you installed exceptions, close the
+To remove xvpn, send your apps IN, run Undo if you installed exceptions, click Stop on the
+Hotspot tab if the hotspot proxy is on, close the
 window, then delete the exe and `%LOCALAPPDATA%\xvpn`.
 
 ## Building from source

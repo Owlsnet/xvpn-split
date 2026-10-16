@@ -76,7 +76,7 @@ static void StyleWindowFrame(HWND hwnd) {
     DwmSetWindowAttribute(hwnd, 20 /* DWMWA_USE_IMMERSIVE_DARK_MODE */, &dark, sizeof(dark));
     int corner = 2 /* DWMWCP_ROUND */;
     DwmSetWindowAttribute(hwnd, 33 /* DWMWA_WINDOW_CORNER_PREFERENCE */, &corner, sizeof(corner));
-    COLORREF edge = RGB(0x3A, 0x2E, 0x5C);
+    COLORREF edge = RGB(0x33, 0x2F, 0x42);
     DwmSetWindowAttribute(hwnd, 34 /* DWMWA_BORDER_COLOR */, &edge, sizeof(edge));
     MARGINS m = { 0, 0, 0, 1 };
     DwmExtendFrameIntoClientArea(hwnd, &m);
@@ -156,6 +156,7 @@ static int StartTabFromCommandLine() {
     if (cmd.find("--apps") != std::string::npos) return TAB_APPS;
     if (cmd.find("--exceptions") != std::string::npos) return TAB_EXCEPTIONS;
     if (cmd.find("--proxy") != std::string::npos) return TAB_PROXY;
+    if (cmd.find("--hotspot") != std::string::npos) return TAB_HOTSPOT;
     return TAB_DASHBOARD;
 }
 
@@ -184,7 +185,7 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     wc.hIcon = LoadIconW(hInst, MAKEINTRESOURCEW(IDI_APP));
     wc.hIconSm = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APP), IMAGE_ICON,
                                    GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
-    wc.hbrBackground = CreateSolidBrush(RGB(0x10, 0x0C, 0x17));
+    wc.hbrBackground = CreateSolidBrush(RGB(0x12, 0x11, 0x17));
     wc.lpszClassName = kWindowClass;
     RegisterClassExW(&wc);
 
@@ -213,10 +214,11 @@ int APIENTRY wWinMain(HINSTANCE hInst, HINSTANCE, LPWSTR, int) {
     ImGui_ImplWin32_Init(hwnd);
     ImGui_ImplDX11_Init(g_dev, g_ctx);
 
+    SetLogFile(DataDir() + "\\activity.log");
     Log("xvpn started - data folder %s", DataDir().c_str());
     if (!InstallEngine()) Log("!! the engine scripts could not be unpacked; OUT/IN and the proxy will not work");
 
-    const float clear[4] = { 0.063f, 0.047f, 0.090f, 1.0f };
+    const float clear[4] = { 0.071f, 0.067f, 0.090f, 1.0f };
     bool running = true;
     while (running) {
         MSG msg;

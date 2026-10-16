@@ -7,6 +7,7 @@ IDI_APP ICON "..\\assets\\xvpn.ico"
 IDR_APP_CHOOSER  RCDATA "..\\engine\\app-chooser.ps1"
 IDR_APP_BYPASS   RCDATA "..\\engine\\app-bypass.ps1"
 IDR_SPLIT_TUNNEL RCDATA "..\\engine\\split-tunnel.ps1"
+IDR_HOTSPOT      RCDATA "..\\engine\\hotspot.ps1"
 
 VS_VERSION_INFO VERSIONINFO
  FILEVERSION     1,0,3,0

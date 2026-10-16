@@ -125,6 +125,10 @@
     Path of a transcript file that receives all output. Useful in an elevated
     window that closes as soon as the script ends.
 
+.PARAMETER OutFile
+    Also appends every output line to this file, as it is written. The xvpn
+    window reads the output of elevated runs from it.
+
 .EXAMPLE
     powershell -ExecutionPolicy Bypass -File .\split-tunnel.ps1
 
@@ -180,10 +184,24 @@ param(
     [int]    $RouteMetric    = 1,
     [int]    $RefreshSeconds = 300,
     [int]    $RunSeconds     = 0,
-    [string] $Log            = ''
+    [string] $Log            = '',
+    [string] $OutFile        = ''
 )
 
 $ErrorActionPreference = 'Continue'
+
+# With -OutFile, everything written to the host is also appended to that file as it is
+# written. An elevated run cannot hand its output to the unelevated xvpn window through a
+# pipe, so the window reads this file instead.
+if ($OutFile) {
+    function Write-Host {
+        param([Parameter(Position = 0)][object]$Object = '', [ConsoleColor]$ForegroundColor = 'Gray', [switch]$NoNewline)
+        Microsoft.PowerShell.Utility\Write-Host $Object -ForegroundColor $ForegroundColor -NoNewline:$NoNewline
+        $tail = "`r`n"
+        if ($NoNewline) { $tail = '' }
+        try { [IO.File]::AppendAllText($OutFile, [string]$Object + $tail) } catch { }
+    }
+}
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $statePath = Join-Path $scriptDir 'split-tunnel.state.json'
 $snapPath  = Join-Path $scriptDir 'routes-before.json'

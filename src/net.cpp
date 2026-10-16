@@ -187,7 +187,7 @@ static void EgressWorker() {
                     ip = body.substr(p + 3, (q == std::string::npos ? body.size() : q) - p - 3);
                 }
             } else {
-                Log("!! egress check failed (error %lu)", GetLastError());
+                Log("!! could not check your public IP (error %lu)", GetLastError());
             }
             WinHttpCloseHandle(hr);
         }
@@ -200,7 +200,7 @@ static void EgressWorker() {
         g_egress.localIp = local;
         g_egress.busy = false;
     }
-    if (!ip.empty()) Log("ok egress %s (from %s)", ip.c_str(), local.c_str());
+    if (!ip.empty()) Log("ok your public IP is %s", ip.c_str());
 }
 
 void StartEgressProbe() {
