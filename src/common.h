@@ -29,4 +29,5 @@ size_t LogCount();
 void ForEachLogLine(const std::function<void(const std::string&)>& fn);
 void ClearLog();
 void RequestLogScroll();   // scroll the log to its end on the next frame
+void SetLogFile(const std::string& path);   // also append every line to this file, with the date
 bool TakeLogScroll();

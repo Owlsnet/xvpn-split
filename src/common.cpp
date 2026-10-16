@@ -1,5 +1,6 @@
 #include "common.h"
 
+#include <algorithm>
 #include <atomic>
 #include <cctype>
 #include <cstdarg>
@@ -48,6 +49,17 @@ bool ReadTextFile(const std::string& path, std::string& out) {
 static std::mutex               g_logMx;
 static std::vector<std::string> g_log;
 static std::atomic<bool>        g_logScroll{ false };
+static std::wstring             g_logFile;
+
+void SetLogFile(const std::string& path) {
+    std::wstring w = Widen(path);
+    // keep one older file, so a long session does not grow it without end
+    WIN32_FILE_ATTRIBUTE_DATA fa;
+    if (GetFileAttributesExW(w.c_str(), GetFileExInfoStandard, &fa) && fa.nFileSizeLow > 1024 * 1024)
+        MoveFileExW(w.c_str(), (w + L".old").c_str(), MOVEFILE_REPLACE_EXISTING);
+    std::lock_guard<std::mutex> lk(g_logMx);
+    g_logFile = w;
+}
 
 void Log(const char* fmt, ...) {
     char msg[900];
@@ -62,6 +74,17 @@ void Log(const char* fmt, ...) {
     std::lock_guard<std::mutex> lk(g_logMx);
     g_log.push_back(line);
     if (g_log.size() > 800) g_log.erase(g_log.begin(), g_log.begin() + 300);
+    if (!g_logFile.empty()) {
+        HANDLE h = CreateFileW(g_logFile.c_str(), FILE_APPEND_DATA, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                               nullptr, OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
+        if (h != INVALID_HANDLE_VALUE) {
+            char row[1100];
+            int n = snprintf(row, sizeof(row), "%04d-%02d-%02d %s\r\n", st.wYear, st.wMonth, st.wDay, line);
+            DWORD wrote = 0;
+            if (n > 0) WriteFile(h, row, (DWORD)std::min<int>(n, (int)sizeof(row) - 1), &wrote, nullptr);
+            CloseHandle(h);
+        }
+    }
 }
 
 size_t LogCount() {

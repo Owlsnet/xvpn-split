@@ -6,7 +6,7 @@
 constexpr float kHeaderHeight       = 44.0f;   // the header strip is the drag area
 constexpr float kWindowButtonsWidth = 124.0f;  // pin / minimise / close at its right end
 
-enum UiTab { TAB_DASHBOARD = 0, TAB_APPS, TAB_EXCEPTIONS, TAB_PROXY };
+enum UiTab { TAB_DASHBOARD = 0, TAB_APPS, TAB_EXCEPTIONS, TAB_PROXY, TAB_HOTSPOT };
 
 void  UiInit(HWND hwnd, float dpi, int startTab);   // after ImGui::CreateContext
 void  UiSetDpi(float dpi);                           // takes effect at the next UiPrepare
