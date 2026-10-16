@@ -6,6 +6,9 @@ Some VPN clients, X-VPN among them, send all traffic through the tunnel and offe
 way to leave individual apps out. xvpn adds that: choose an app, send it OUT, and
 it uses your normal internet connection while every other app stays in the VPN.
 
+It can also put your phone on the VPN: it turns on the PC's Mobile Hotspot with a
+proxy that only uses the VPN.
+
 It is a single portable exe. There is no installer, no driver and no service, and
 it needs no administrator rights for per-app splitting.
 
@@ -44,7 +47,8 @@ To go back, select the browser again and click **Keep IN**.
 
 ## How it works
 
-Windows has no per-process routing for normal programs, so xvpn uses two techniques.
+Windows has no per-process routing for normal programs, so xvpn uses two techniques,
+and a third one for the hotspot.
 
 **Per-app: bypass proxy.** xvpn runs a small HTTP/HTTPS proxy on `127.0.0.1`. Its
 outgoing connections are bound to the physical network adapter with the socket
@@ -66,7 +70,12 @@ match, so traffic to that destination bypasses the tunnel for every app. The
 routes are added to the active store only (not persistent), recorded in a state
 file, and removed by Undo, which only touches routes it added.
 
-The work is done by three PowerShell scripts that are embedded in the exe and
+**Hotspot: a proxy pinned to the tunnel.** The opposite of the bypass proxy: a proxy on
+the hotspot address whose outgoing connections are bound to the VPN tunnel with
+`IP_UNICAST_IF`. Devices that use it as their Wi-Fi proxy leave through the VPN. When the
+VPN is down it refuses connections instead of falling back to the real network.
+
+The work is done by four PowerShell scripts that are embedded in the exe and
 unpacked to `%LOCALAPPDATA%\xvpn` on start:
 
 | Script | Purpose |
@@ -125,10 +134,19 @@ Lets phones and other devices use the VPN through your PC's Windows Mobile Hotsp
 1. Optionally type a hotspot name and password (they are remembered for next time).
 2. Click **Start** and allow the Windows permission prompt.
 3. On the phone, join the hotspot. In that Wi-Fi network's settings, set **Proxy** to
-   **Manual** with the server and port the tab shows (normally `192.168.137.1`, `8080`).
+   **Manual** with the server and port the tab shows (normally `192.168.137.1`, `8080`):
+   - iPhone: Settings → Wi-Fi → ⓘ next to the hotspot → Configure Proxy → Manual
+   - Android: Settings → Wi-Fi → the hotspot's settings → Advanced → Proxy → Manual
 
-The tab shows how many devices are connected. **Stop** ends the proxy, removes its
-firewall rule and turns the hotspot off again if xvpn turned it on.
+The tab shows how many devices are connected and how many connections went through the
+VPN. If a device is connected but that count stays at 0, the device is not using the
+proxy: without the proxy setting it still gets internet from the hotspot, but over your
+real connection. **Stop** ends the proxy, removes its firewall rule and turns the hotspot
+off again if xvpn turned it on.
+
+The hotspot runs on the same Wi-Fi card as the PC's own connection and shares its
+channel, so on a 2.4 GHz network it is slow; the tab says so. Connecting the PC to a
+5 GHz network or a cable, and choosing a VPN server close to you, makes it much faster.
 
 Sharing the VPN itself over the hotspot is not possible with X-VPN: it is a VPN-plugin
 app without a network adapter, and Windows' Internet Connection Sharing refuses it or
